@@ -1,0 +1,28 @@
+{
+  "name": "landing-blocks",
+  "version": "1.0.0",
+  "private": true,
+  "description": "No-code Landing Page / Portfolio Builder with block presets and static export (HTML/CSS ZIP)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "build:gh": "vite build --base=./",
+    "predeploy": "npm run build:gh",
+    "deploy": "gh-pages -d dist"
+  },
+  "dependencies": {
+    "file-saver": "^2.0.5",
+    "html2canvas": "^1.4.1",
+    "jszip": "^3.10.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.56",
+    "@types/react-dom": "^18.2.19",
+    "typescript": "^5.4.2",
+    "vite": "^5.2.0",
+    "gh-pages": "^6.1.1"
+  }
+}

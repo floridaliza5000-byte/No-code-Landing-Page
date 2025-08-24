@@ -1,0 +1,329 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import html2canvas from 'html2canvas'
+import { saveAs } from 'file-saver'
+import { BlockDefinition, BlockInstance, BLOCKS } from './blocks/blocks'
+import { Palette } from './components/Palette'
+import { Canvas } from './components/Canvas'
+import { Inspector } from './components/Inspector'
+import { exportProjectAsZip } from './export/exportZip'
+
+export type Theme = {
+  primary: string
+  secondary: string
+  bg: string
+  text: string
+  fontFamily: string
+}
+
+export type Seo = {
+  title: string
+  description: string
+  ogImage?: string
+}
+
+const defaultTheme: Theme = {
+  primary: '#3b82f6',
+  secondary: '#10b981',
+  bg: '#0f172a',
+  text: '#e2e8f0',
+  fontFamily: 'Inter, system-ui, Avenir, Helvetica, Arial, sans-serif',
+}
+
+export default function App(){
+  const [theme, setTheme] = useState<Theme>(defaultTheme)
+  const [pageTitle, setPageTitle] = useState('My Landing Page')
+  const [blocks, setBlocks] = useState<BlockInstance[]>([])
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [seo, setSeo] = useState<Seo>({ title: 'My Landing Page', description: 'Describe your page here', ogImage: '' })
+  const [savedPresets, setSavedPresets] = useState<Array<{ id:string; type: BlockDefinition['type']; name: string; props: any }>>([])
+  const [preview, setPreview] = useState<'desktop'|'tablet'|'mobile'>('desktop')
+
+  // History (undo/redo)
+  const [history, setHistory] = useState<Array<{ title:string; theme:Theme; blocks:BlockInstance[]; seo:Seo }>>([])
+  const [future, setFuture] = useState<typeof history>([])
+  const applyingHistory = React.useRef(false)
+
+  const selected = useMemo(()=> blocks.find(b=>b.id===selectedId) ?? null, [blocks, selectedId])
+
+  function addBlock(def: BlockDefinition){
+    const instance: BlockInstance = {
+      id: crypto.randomUUID(),
+      type: def.type,
+      props: def.createDefaultProps(),
+    }
+    setBlocks(b=>[...b, instance])
+    setSelectedId(instance.id)
+  }
+
+  function updateBlock(id: string, props: any){
+    setBlocks(bs=> bs.map(b=> b.id===id ? { ...b, props } : b))
+  }
+
+  function removeBlock(id: string){
+    setBlocks(bs=> bs.filter(b=> b.id!==id))
+    if(selectedId===id) setSelectedId(null)
+  }
+
+  function moveBlock(id: string, direction: 'up'|'down'){
+    setBlocks(bs=>{
+      const idx = bs.findIndex(b=> b.id===id)
+      if(idx<0) return bs
+      const swapWith = direction==='up' ? idx-1 : idx+1
+      if(swapWith<0 || swapWith>=bs.length) return bs
+      const copy = bs.slice()
+      const tmp = copy[idx]
+      copy[idx] = copy[swapWith]
+      copy[swapWith] = tmp
+      return copy
+    })
+  }
+
+  function duplicateBlock(id: string){
+    setBlocks(bs=>{
+      const idx = bs.findIndex(b=> b.id===id)
+      if(idx<0) return bs
+      const inst = bs[idx]
+      const dup: BlockInstance = { id: crypto.randomUUID(), type: inst.type, props: JSON.parse(JSON.stringify(inst.props)) }
+      const copy = bs.slice()
+      copy.splice(idx+1, 0, dup)
+      return copy
+    })
+  }
+
+  // Starter templates
+  function loadTemplate(name: 'SaaS'|'Agency'|'Portfolio'){
+    const pick = (t: 'hero'|'features'|'pricing'|'testimonials'|'contact'|'gallery') => BLOCKS.find(b=> b.type===t)!
+    const make = (def: BlockDefinition) => ({ id: crypto.randomUUID(), type: def.type, props: def.createDefaultProps() }) as BlockInstance
+    let list: BlockInstance[] = []
+    if(name==='SaaS'){
+      list = [make(pick('hero')), make(pick('features')), make(pick('pricing')), make(pick('testimonials')), make(pick('contact'))]
+    } else if(name==='Agency'){
+      list = [make(pick('hero')), make(pick('gallery')), make(pick('features')), make(pick('testimonials')), make(pick('contact'))]
+    } else {
+      // Portfolio
+      list = [make(pick('hero')), make(pick('gallery')), make(pick('testimonials')), make(pick('contact'))]
+    }
+    setBlocks(list)
+    setSelectedId(list[0]?.id ?? null)
+  }
+
+  // Drag-and-drop reorder
+  function reorderBlocks(fromIndex: number, toIndex: number){
+    setBlocks(bs=>{
+      if(fromIndex===toIndex || fromIndex<0 || toIndex<0 || fromIndex>=bs.length || toIndex>=bs.length) return bs
+      const copy = bs.slice()
+      const [moved] = copy.splice(fromIndex, 1)
+      copy.splice(toIndex, 0, moved)
+      return copy
+    })
+  }
+
+  async function handleExport(){
+    await exportProjectAsZip({ title: pageTitle, theme, blocks, seo }, { optimizeImages: true, maxWidth: 1600, quality: 0.82 })
+  }
+
+  async function handleScreenshot(){
+    const target = document.querySelector('.stage') as HTMLElement | null
+    if(!target) return
+    const canvas = await html2canvas(target, { backgroundColor: theme.bg })
+    const blob: Blob | null = await new Promise(res=> canvas.toBlob(b=> res(b), 'image/png'))
+    if(blob) saveAs(blob, `${(pageTitle||'landing').replace(/\s+/g,'-').toLowerCase()}-screenshot.png`)
+  }
+
+  function handleDownloadReadme(){
+    const md = `# ${pageTitle}\n\nStatic export generated by Landing Blocks.\n\n## Features\n- Drag-and-drop sections\n- Theme presets and Google Fonts\n- SEO meta tags\n- Image assets bundled to /assets\n\n## How to use\nOpen index.html or host the folder on any static hosting.\n\n## Contact Form\nIf you selected Formspree, ensure your form ID is valid. For Netlify Forms, host on Netlify.\n`;
+    const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' })
+    saveAs(blob, 'README-demo.md')
+  }
+
+  // Autosave/load
+  useEffect(()=>{
+    try{
+      const raw = localStorage.getItem('landingblocks:project')
+      if(raw){
+        const data = JSON.parse(raw)
+        if(data.theme) setTheme(data.theme)
+        if(data.title) setPageTitle(data.title)
+        if(Array.isArray(data.blocks)) setBlocks(data.blocks)
+        if(data.seo) setSeo(data.seo)
+      }
+      const rawPresets = localStorage.getItem('landingblocks:savedPresets')
+      if(rawPresets){ setSavedPresets(JSON.parse(rawPresets)) }
+    }catch{}
+  }, [])
+
+  useEffect(()=>{
+    const payload = { title: pageTitle, theme, blocks, seo }
+    try{ localStorage.setItem('landingblocks:project', JSON.stringify(payload)) }catch{}
+  }, [pageTitle, theme, blocks, seo])
+
+  // Keyboard shortcuts
+  useEffect(()=>{
+    function onKey(e: KeyboardEvent){
+      const meta = e.ctrlKey || e.metaKey
+      if(meta && e.key.toLowerCase()==='z'){
+        if(e.shiftKey){ redo() } else { undo() }
+        e.preventDefault(); return
+      }
+      if(meta && (e.key.toLowerCase()==='y')){ redo(); e.preventDefault(); return }
+      if(e.key==='Delete' || e.key==='Backspace'){
+        if(selectedId){ removeBlock(selectedId) }
+      }
+      if(meta && e.key.toLowerCase()==='d'){
+        if(selectedId){ duplicateBlock(selectedId); e.preventDefault() }
+      }
+      if(e.altKey && (e.key==='ArrowUp' || e.key==='ArrowDown')){
+        if(selectedId){ moveBlock(selectedId, e.key==='ArrowUp' ? 'up':'down'); e.preventDefault() }
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return ()=> window.removeEventListener('keydown', onKey)
+  }, [selectedId])
+
+  // Push to history on significant mutations
+  useEffect(()=>{
+    if(applyingHistory.current) return
+    const snap = { title: pageTitle, theme, blocks, seo }
+    setHistory(h=>{
+      const next = [...h, snap]
+      return next.length>50 ? next.slice(-50) : next
+    })
+    setFuture([])
+  }, [pageTitle, theme, blocks, seo])
+
+  function undo(){
+    setHistory(h=>{
+      if(h.length<=1) return h
+      const prev = h[h.length-2]
+      setFuture(f=> [h[h.length-1], ...f])
+      applyingHistory.current = true
+      setPageTitle(prev.title)
+      setTheme(prev.theme)
+      setBlocks(prev.blocks)
+      setSeo(prev.seo)
+      applyingHistory.current = false
+      return h.slice(0, -1)
+    })
+  }
+  function redo(){
+    setFuture(f=>{
+      if(f.length===0) return f
+      const [next, ...rest] = f
+      setHistory(h=> [...h, next])
+      applyingHistory.current = true
+      setPageTitle(next.title)
+      setTheme(next.theme)
+      setBlocks(next.blocks)
+      setSeo(next.seo)
+      applyingHistory.current = false
+      return rest
+    })
+  }
+
+  return (
+    <div className="app" style={{ ['--bg' as any]: theme.bg, ['--text' as any]: theme.text, ['--primary' as any]: theme.primary, ['--secondary' as any]: theme.secondary, ['--font' as any]: theme.fontFamily }}>
+      <header className="topbar">
+        <div className="brand">Landing Blocks</div>
+        <input className="title" value={pageTitle} onChange={e=>setPageTitle(e.target.value)} />
+        <div className="spacer" />
+        <div className="theme">
+          <input title="Primary" type="color" value={theme.primary} onChange={e=>setTheme(t=>({ ...t, primary: e.target.value }))} />
+          <input title="Secondary" type="color" value={theme.secondary} onChange={e=>setTheme(t=>({ ...t, secondary: e.target.value }))} />
+          <input title="Background" type="color" value={theme.bg} onChange={e=>setTheme(t=>({ ...t, bg: e.target.value }))} />
+          <input title="Text" type="color" value={theme.text} onChange={e=>setTheme(t=>({ ...t, text: e.target.value }))} />
+          <select title="Font" value={theme.fontFamily} onChange={e=> setTheme(t=> ({ ...t, fontFamily: e.target.value }))}>
+            <option value="Inter, system-ui, Avenir, Helvetica, Arial, sans-serif">Inter</option>
+            <option value="Poppins, system-ui, Avenir, Helvetica, Arial, sans-serif">Poppins</option>
+            <option value="Roboto, system-ui, Avenir, Helvetica, Arial, sans-serif">Roboto</option>
+            <option value="Montserrat, system-ui, Avenir, Helvetica, Arial, sans-serif">Montserrat</option>
+            <option value="Lato, system-ui, Avenir, Helvetica, Arial, sans-serif">Lato</option>
+            <option value="Open Sans, system-ui, Avenir, Helvetica, Arial, sans-serif">Open Sans</option>
+            <option value="Playfair Display, system-ui, Avenir, Helvetica, Arial, sans-serif">Playfair Display</option>
+          </select>
+          <select title="Theme Preset" onChange={e=>{
+            const preset = e.target.value
+            if(preset==='dark') setTheme(t=> ({ ...t, bg:'#0f172a', text:'#e2e8f0' }))
+            if(preset==='light') setTheme(t=> ({ ...t, bg:'#ffffff', text:'#0f172a' }))
+            if(preset==='ocean') setTheme(t=> ({ ...t, primary:'#0ea5e9', secondary:'#06b6d4' }))
+            if(preset==='sunset') setTheme(t=> ({ ...t, primary:'#f97316', secondary:'#ef4444' }))
+          }} defaultValue="presets">
+            <option value="presets" disabled>Presets</option>
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+            <option value="ocean">Ocean</option>
+            <option value="sunset">Sunset</option>
+          </select>
+          <button title="Toggle Light/Dark" onClick={()=> setTheme(t=> ({ ...t, bg: t.bg==='#ffffff' ? '#0f172a':'#ffffff', text: t.text==='#0f172a' ? '#e2e8f0':'#0f172a' }))}>Light/Dark</button>
+        </div>
+        <div style={{ display:'flex', gap:8, marginLeft:8 }}>
+          <button onClick={()=>loadTemplate('SaaS')}>Template: SaaS</button>
+          <button onClick={()=>loadTemplate('Agency')}>Agency</button>
+          <button onClick={()=>loadTemplate('Portfolio')}>Portfolio</button>
+        </div>
+        <div style={{ display:'flex', gap:8, marginLeft:8 }}>
+          <button onClick={undo} disabled={history.length<=1}>Undo</button>
+          <button onClick={redo} disabled={future.length===0}>Redo</button>
+        </div>
+        <button className="export" onClick={handleExport}>Export ZIP</button>
+        <div style={{ display:'flex', gap:8, marginLeft:8 }}>
+          <button onClick={handleScreenshot}>Download Screenshot</button>
+          <button onClick={handleDownloadReadme}>Download README</button>
+        </div>
+      </header>
+
+      <div className="layout">
+        <aside className="sidebar">
+          <Palette blocks={BLOCKS} onAdd={addBlock} savedPresets={savedPresets} onAddPreset={(preset: { id:string; type: BlockDefinition['type']; name:string; props:any })=>{
+            const def = BLOCKS.find(b=> b.type===preset.type)
+            if(!def) return
+            const instance: BlockInstance = { id: crypto.randomUUID(), type: preset.type, props: JSON.parse(JSON.stringify(preset.props)) }
+            setBlocks(b=>[...b, instance])
+            setSelectedId(instance.id)
+          }} />
+        </aside>
+        <main className="stage" style={{ display:'flex', justifyContent:'center', alignItems:'flex-start', padding:'10px' }}>
+          <div style={{ width: preview==='mobile'? 390 : preview==='tablet'? 820 : 1200, border:'1px solid rgba(255,255,255,0.1)', borderRadius:12, overflow:'hidden', background:'transparent' }}>
+          <Canvas theme={theme} blocks={blocks} selectedId={selectedId} onSelect={setSelectedId} onRemove={removeBlock} onUpdate={updateBlock} onMoveUp={(id: string)=>moveBlock(id,'up')} onMoveDown={(id: string)=>moveBlock(id,'down')} onDuplicate={(id: string)=>duplicateBlock(id)} onReorder={(from: number, to: number)=>reorderBlocks(from, to)} />
+          </div>
+        </main>
+        <aside className="inspector">
+          <Inspector key={selected?.id ?? 'seo'} block={selected} onChange={(p: any)=> selected && updateBlock(selected.id, p)} seo={seo} onSeoChange={setSeo} />
+          {selected && (
+            <div className="inspector-pane" style={{ marginTop:12 }}>
+              <div className="title">Save Block as Preset</div>
+              <label className="field"><div className="label">Name</div>
+                <input placeholder="My preset" id="preset-name" />
+              </label>
+              <div style={{ display:'flex', gap:8 }}>
+                <button onClick={()=>{
+                  const el = document.getElementById('preset-name') as HTMLInputElement | null
+                  const name = (el?.value || '').trim() || 'Preset'
+                  const b = blocks.find(x=> x.id===selectedId)
+                  if(!b) return
+                  const preset = { id: crypto.randomUUID(), type: b.type, name, props: JSON.parse(JSON.stringify(b.props)) }
+                  const next = [...savedPresets, preset]
+                  setSavedPresets(next)
+                  try{ localStorage.setItem('landingblocks:savedPresets', JSON.stringify(next)) }catch{}
+                  if(el) el.value = ''
+                }}>Save Preset</button>
+                <button onClick={()=>{
+                  setSavedPresets([])
+                  try{ localStorage.removeItem('landingblocks:savedPresets') }catch{}
+                }}>Clear All Presets</button>
+              </div>
+            </div>
+          )}
+        </aside>
+      </div>
+
+      <div style={{ position:'fixed', bottom:14, left:14, display:'flex', gap:6, background:'rgba(0,0,0,0.4)', padding:'6px 8px', borderRadius:8 }}>
+        <span style={{ opacity:0.8 }}>Preview:</span>
+        <button onClick={()=>setPreview('desktop')} disabled={preview==='desktop'}>Desktop</button>
+        <button onClick={()=>setPreview('tablet')} disabled={preview==='tablet'}>Tablet</button>
+        <button onClick={()=>setPreview('mobile')} disabled={preview==='mobile'}>Mobile</button>
+      </div>
+
+      <footer className="footer">Tip: Click a block to edit. Drag to reorder (coming soon).</footer>
+    </div>
+  )
+}
